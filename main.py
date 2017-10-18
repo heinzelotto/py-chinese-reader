@@ -1,14 +1,15 @@
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Pango
+from gi.repository import Gtk, Pango, Gdk
 import itertools
 import unittest
+import collections
 
 class MainWindow(Gtk.Window):
     def __init__(self):
         Gtk.Window.__init__(self, title="国语")
 
-        self.set_default_size(600, 500)
+        self.set_default_size(700, 400)
 
         self.grid = Gtk.Grid()
         self.add(self.grid)
@@ -17,6 +18,13 @@ class MainWindow(Gtk.Window):
         self.config_textview()
 
         self.clickManager = ClickManager(self.textview)
+        self.history = LookupHistory()
+
+        self.connect("delete-event", self.shutdown)
+
+    def shutdown(self, bla1, bla2):
+        print(self.history.exportHistory())
+        Gtk.main_quit()
 
     def create_textview(self):
         scrolledwindow = Gtk.ScrolledWindow()
@@ -28,15 +36,23 @@ class MainWindow(Gtk.Window):
         self.textview.set_editable(False)
         self.textview.set_cursor_visible(False)
         self.textview.set_wrap_mode(Gtk.WrapMode.CHAR)
-              
+
+        # eventbox to intercept/trap textview events
+        self.eventbox = Gtk.EventBox()
+        scrolledwindow.add(self.eventbox)
+
         self.textbuffer = self.textview.get_buffer()
-        scrolledwindow.add(self.textview)
+        self.eventbox.add(self.textview)
+        self.eventbox.set_above_child(True)
+
+        # tag to highlight current word
+        self.curHlTag = self.textbuffer.create_tag("curHl", background="red")
 
     def config_textview(self):
-        self.loadDocumentIntoViewer('/home/felix/Projects/pychinese/santi4.txt')
+        self.loadDocumentIntoViewer('/home/felix/Projects/pychinese/santi5.txt')
         self.setViewerFontSize(32)
 
-        self.textview.connect('button-press-event', self.clickedViewer)
+        self.eventbox.connect('button-press-event', self.clickedViewer)
 
     def loadDocumentIntoViewer(self, filename):
         with open(filename, 'r') as content_file:
@@ -49,43 +65,81 @@ class MainWindow(Gtk.Window):
         self.textbuffer.apply_tag(self.font_size_tag, self.textbuffer.get_start_iter(), self.textbuffer.get_end_iter())
 
     def clickedViewer(self, widget, event):
+        if event.type == Gdk.EventType._2BUTTON_PRESS:
+            return True
+            
         buffer_x, buffer_y = self.textview.window_to_buffer_coords(Gtk.TextWindowType.TEXT, event.x, event.y)
-        print(buffer_x, buffer_y)
+        #print(buffer_x, buffer_y)
+        i, it, tr = self.textview.get_iter_at_position(buffer_x, buffer_y)
 
-        results = self.clickManager.getResultsForClick(buffer_x, buffer_y)
+        result = self.clickManager.getResultForClick(it)
 
+        # highlight new word
+        if result != False:
+            #print(result)
+            word = result[0]
+
+            self.history.addEntry(word)
+            #print(self.history.exportHistory())
+            
+            wmbl_list = list(result[1])
+            self.highlightNewWord(it, wmbl_list[0])
+
+            dict_entries = list(map(lambda wmbl: cedict.lookupByIdx(wmbl.dictIdx), wmbl_list))
+            print()
+            print(*dict_entries, sep="\n")
+            
+            
+
+    def highlightNewWord(self, it, wmbl):
+        self.textbuffer.remove_tag(self.curHlTag, self.textbuffer.get_start_iter(), self.textbuffer.get_end_iter())
+
+        start_it = it.copy()
+        start_it.backward_chars(wmbl.posInEntry)
+        end_it = it.copy()
+        end_it.forward_chars(len(wmbl.word) - wmbl.posInEntry)
+        self.textbuffer.apply_tag(self.curHlTag, start_it, end_it)
+
+
+class LookupHistory():
+    def __init__(self):
+        #self.counter = 0
+        self.history = collections.OrderedDict.fromkeys([])
+
+    def addEntry(self, word):
+        self.history[word] = None
+        
+        # if word not in self.history: # this is if we want them to have order of last-clicked, as opposed to first-clicked. but we don't
+        #     self.counter += 1
+        #     self.history[word] = self.counter
+
+    def exportHistory(self):
+        return list(self.history.keys())
 
 class ClickManager():
     def __init__(self, textview):
         self.textview = textview
-        self.lastClicked = False
 
-    def getResultsForClick(self, buffer_x, buffer_y):
-        i, it, tr = self.textview.get_iter_at_position(buffer_x, buffer_y)
+        # machinery to cycle through results on repeated click
+        self.lastClickedIdx = None
+        self.multiClickResults = None # either is None or a cyclic generator
 
-        #if self.lastClickedIter == 
+    def getResultForClick(self, it):
+        """finds dictionary entries for words around the character at it
+        Returns tuple of such a word match and a list of all its dict entries
+        repeated clicks on the same character cycle through the other word matches"""
 
-        # prepare to call smarter lookup of a word around char at curser position
-        context_radius = 4
-        
-        it_start_context = it.copy()
-        it_start_zi = it.copy()
-        it_end_zi = it.copy()
-        it_end_context = it.copy()
+        # repeated click
+        if self.lastClickedIdx == it.get_offset():
+            if self.multiClickResults == False:
+                return False
+            else:
+                return next(self.multiClickResults)
 
-        it_start_context.backward_chars(context_radius)
-        it_end_zi.forward_chars(1)        
-        it_end_context.forward_chars(context_radius+1)
+        # click at new position
+        self.lastClickedIdx = it.get_offset()   
 
-        context_before = it_start_context.get_slice(it_start_zi)
-        zi = it_start_zi.get_slice(it_end_zi)
-        context_after = it_end_zi.get_slice(it_end_context)
-
-        #print(zi, context)
-        #print(context_before, zi, context_after)
-        #r = cedict.lookupWordInContext(zi, context_before, context_after)
-
-        rs = cedict.findEntriesContainingCharacter(zi)
+        rs = cedict.findEntriesContainingCharacter(it.get_char())
         matches = []
         for wmbl in rs:
             #entry = r[0]
@@ -121,12 +175,35 @@ class ClickManager():
             if match == True:
                 matches.append(wmbl)
 
-        #print(matches)
-        lookup_matches = map(lambda wmbl : cedict.lookupByIdx(wmbl.dictIdx), matches)
+        # sort matches:
+        # major sort criterion is match word length
+        # prioritizes matches starting closer to click point
+        # that is: longest match, if equal length, rightmost match
 
-        print()
-        for m in lookup_matches:
-            print (m)
+        sort_minor = sorted(matches, key=lambda m: m.posInEntry, reverse=False)
+        matchesSorted = sorted(sort_minor, key=lambda m: len(m.word), reverse=True)
+
+        # group multiple entries for the same word
+        matchesBatches = itertools.groupby(matchesSorted, lambda m: m.word)
+
+        # make this permanent
+        matchesBatchesList = map(lambda e: (e[0], list(e[1])), matchesBatches)
+        
+        #print (list(map(lambda m : m.word, matchesSorted)))
+        #print (list(map(lambda mb : mb[0], matchesBatches)))
+        #print (list(matchesBatches))
+
+        # put results in our cycle
+        #self.multiClickResults = itertools.cycle(matchesSorted)
+        self.multiClickResults = itertools.cycle(matchesBatchesList)
+        return next(self.multiClickResults)
+
+        #print(matches)
+        #lookup_matches = map(lambda wmbl : cedict.lookupByIdx(wmbl.dictIdx), matches)
+
+        #print()
+        #for m in lookup_matches:
+        #    print (m)
 
         
 def filterLines(content):
@@ -198,7 +275,7 @@ class CeDict():
 cedict = CeDict()
         
 win = MainWindow()
-win.connect("delete-event", Gtk.main_quit)
+#win.connect("delete-event", Gtk.main_quit)
 win.show_all()
 Gtk.main()
 
