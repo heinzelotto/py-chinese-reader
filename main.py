@@ -123,52 +123,60 @@ class ClickManager():
         # machinery to cycle through results on repeated click
         self.lastClickedIdx = None
         self.multiClickResults = None # either is None or a cyclic generator
+        #self.lastMultiClickResults = None # to show overlaps from new and last one at the end of cycling
+
+        self.curPositionResultHistory = set()
+
+        #self.lastResult = None
+        # two clicks on different characters of the same word would yield the same result word
+        # even though we can guess that this is not the desired result. We save it so we can queue it last when this happens
 
     def getResultForClick(self, it):
         """finds dictionary entries for words around the character at it
         Returns tuple of such a word match and a list of all its dict entries
         repeated clicks on the same character cycle through the other word matches"""
-
+        
         # repeated click
         if self.lastClickedIdx == it.get_offset():
             if self.multiClickResults == False:
                 return False
-            else:
-                return next(self.multiClickResults)
 
+        else:
+            self.clickAtNewPosition(it)
+
+        # update fields and return
+        nextRes = next(self.multiClickResults)
+        self.curPositionResultHistory.add(nextRes[0])
+        return nextRes
+
+    def clickAtNewPosition(self, it):
         # click at new position
         self.lastClickedIdx = it.get_offset()   
 
         rs = cedict.findEntriesContainingCharacter(it.get_char())
         matches = []
         for wmbl in rs:
-            #entry = r[0]
-            #posInEntry = r[1]
             leftChars = wmbl.posInEntry
             rightChars = len(wmbl.word) - leftChars - 1
-
+            
             match = True
             it_left = it.copy()
             for i in range(leftChars):
                 if(it_left.backward_char()):
-                    #print(it_left.get_char(), entry[posInEntry-1 - i])
                     if it_left.get_char() != wmbl.word[wmbl.posInEntry-1 - i]:
                         match = False
                         break
-                else:
-                    # iterator is at end of text and repeats itself
+                else: # iterator is at end of text and repeats itself
                     match = False
                     break
                     
             it_right = it.copy()        
             for i in range(rightChars):
                 if(it_right.forward_char()):
-                    #print(it_right.get_char(), entry[posInEntry+1 + i])
                     if it_right.get_char() != wmbl.word[wmbl.posInEntry+1 + i]:
                         match = False
                         break
-                else:
-                    # iterator is at beginning of text
+                else: # iterator is at beginning of text
                     match = False
                     break
 
@@ -179,31 +187,25 @@ class ClickManager():
         # major sort criterion is match word length
         # prioritizes matches starting closer to click point
         # that is: longest match, if equal length, rightmost match
-
         sort_minor = sorted(matches, key=lambda m: m.posInEntry, reverse=False)
         matchesSorted = sorted(sort_minor, key=lambda m: len(m.word), reverse=True)
 
         # group multiple entries for the same word
         matchesBatches = itertools.groupby(matchesSorted, lambda m: m.word)
 
-        # make this permanent
-        matchesBatchesList = map(lambda e: (e[0], list(e[1])), matchesBatches)
-        
-        #print (list(map(lambda m : m.word, matchesSorted)))
-        #print (list(map(lambda mb : mb[0], matchesBatches)))
-        #print (list(matchesBatches))
+        # make this permanent, since groupby entries are lost after one access
+        matchesBatchesList = list(map(lambda m: (m[0], list(m[1])), matchesBatches))
 
-        # put results in our cycle
-        #self.multiClickResults = itertools.cycle(matchesSorted)
-        self.multiClickResults = itertools.cycle(matchesBatchesList)
-        return next(self.multiClickResults)
+        # filter those matches that are common to the last (different) clicked opsition.
+        # move them to the end, since if someone clicked a different letter he wants to see different matches
+        l_recently_seen = [m for m in matchesBatchesList if m[0] in self.curPositionResultHistory]
+        l_fresh = [m for m in matchesBatchesList if m[0] not in self.curPositionResultHistory]
+        matchesBatchesListFiltered = l_fresh + l_recently_seen
+        #assert (set(map(lambda m: m[0], matchesBatchesList)) == set(map(lambda m: m[0], matchesBatchesListFiltered)))
 
-        #print(matches)
-        #lookup_matches = map(lambda wmbl : cedict.lookupByIdx(wmbl.dictIdx), matches)
-
-        #print()
-        #for m in lookup_matches:
-        #    print (m)
+        # update class fields
+        self.curPositionResultHistory = set() # reset the variable used for this detection
+        self.multiClickResults = itertools.cycle(matchesBatchesListFiltered) # put results in our cycle
 
         
 def filterLines(content):
